@@ -1,0 +1,327 @@
+import streamlit as st
+from groq import Groq
+from playwright.sync_api import sync_playwright
+from bs4 import BeautifulSoup
+import base64
+import json
+import os
+from datetime import datetime
+from pathlib import Path
+import uuid
+
+# ====================== CONFIG ======================
+st.set_page_config(
+    page_title="Heuristics Analyzer + History",
+    page_icon="🔍",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+st.title("Multi Rule-set UX / Accessibility Analyzer")
+st.markdown("""
+Choose rule sets → analyze any URL → **full dashboard**  
+**New:** Audit History (saved locally on your computer) + Ask AI follow-up questions for **every** audit!
+""")
+
+# ====================== FOLDERS & HISTORY FILE ======================
+Path("screenshots").mkdir(exist_ok=True)
+HISTORY_FILE = "audits_history.json"
+
+def load_history():
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            return []
+    return []
+
+def save_history(history):
+    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(history, f, indent=2, ensure_ascii=False)
+
+# ====================== RULE SETS (Home Page) ======================
+st.subheader("Select Rule Sets to Evaluate Against")
+
+rule_sets = {
+    "Nielsen's 10 Usability Heuristics": """1. Visibility of system status
+2. Match between system and the real world
+3. User control and freedom
+4. Consistency and standards
+5. Error prevention
+6. Recognition rather than recall
+7. Flexibility and efficiency of use
+8. Aesthetic and minimalist design
+9. Help users recognize, diagnose, and recover from errors
+10. Help and documentation""",
+
+    "Shneiderman's 8 Golden Rules": """1. Strive for consistency
+2. Enable frequent users to use shortcuts
+3. Offer informative feedback
+4. Design dialog to yield closure
+5. Offer simple error handling
+6. Permit easy reversal of actions
+7. Support internal locus of control
+8. Reduce short-term memory load""",
+
+    "Gerhardt-Powals' Cognitive Principles": """1. Automate unwanted workload
+2. Reduce uncertainty
+3. Fuse data
+4. Present new information with meaningful aids
+5. Limit data-driven tasks
+6. Minimize mental effort""",
+
+    "WCAG Accessibility (POUR)": """Perceivable – information and UI components must be presentable
+Operable – UI components and navigation must be operable
+Understandable – information and operation must be understandable
+Robust – content must be robust enough"""
+}
+
+all_selected = st.checkbox("✅ Select All Rule Sets", value=True)
+
+if all_selected:
+    selected_sets = list(rule_sets.keys())
+    st.success("All rule sets will be used")
+else:
+    selected_sets = st.multiselect(
+        "Choose one or more rule sets",
+        options=list(rule_sets.keys()),
+        default=["Nielsen's 10 Usability Heuristics"]
+    )
+
+if not selected_sets:
+    st.warning("Please select at least one rule set")
+
+# ====================== SIDEBAR ======================
+with st.sidebar:
+    st.header("📋 Selected Rule Sets")
+    for s in selected_sets:
+        st.markdown(f"• **{s}**")
+
+    st.divider()
+    
+    groq_key = "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"
+
+    st.divider()
+    st.subheader("📜 Audit History (saved locally)")
+    
+    history = load_history()
+    
+    if history:
+        st.caption(f"Total audits: {len(history)} (last 10 shown)")
+        for audit in reversed(history[-10:]):
+            label = f"{audit['url'][:40]}... | {audit['timestamp']} | {audit.get('overall_score', 0):.1f}/10"
+            if st.button(label, key=f"load_{audit['id']}"):
+                st.session_state.current_audit = audit
+                st.rerun()
+    else:
+        st.info("No audits yet. Analyze a website to start saving history.")
+
+    if history and st.button("🗑️ Clear All History", type="secondary"):
+        if os.path.exists(HISTORY_FILE):
+            os.remove(HISTORY_FILE)
+        for f in Path("screenshots").glob("*.png"):
+            f.unlink()
+        st.session_state.pop("current_audit", None)
+        st.rerun()
+
+    st.divider()
+    st.caption("History is stored on your computer (audits_history.json + screenshots folder)")
+
+# ====================== MAIN AREA ======================
+if "current_audit" in st.session_state and st.session_state.current_audit:
+    # ================== VIEWING PAST OR CURRENT AUDIT ==================
+    audit = st.session_state.current_audit
+    st.success(f"Loaded audit: {audit['url']}")
+    st.caption(audit['timestamp'])
+
+    # Scores at top
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Overall Score", f"{audit.get('overall_score', 0):.1f}/10")
+    with col2:
+        st.metric("Usability Score", f"{audit.get('usability_score', 0):.1f}/10")
+    with col3:
+        st.metric("Accessibility Score", f"{audit.get('accessibility_score', 0):.1f}/10")
+
+    # Screenshot (if exists)
+    screenshot_path = audit.get("screenshot_path")
+    if screenshot_path and os.path.exists(screenshot_path):
+        st.subheader("📸 Screenshot")
+        st.image(screenshot_path, use_column_width=True)
+    else:
+        st.info("Screenshot not available for this audit")
+
+    # Summary
+    st.subheader("📝 Summary")
+    st.markdown(audit.get("summary", "No summary saved"))
+
+    # Severity boxes
+    st.subheader("⚠️ Issue Severity")
+    issues = audit.get("issues", [])
+    c = sum(1 for i in issues if i.get("severity", "").lower() == "critical")
+    h = sum(1 for i in issues if i.get("severity", "").lower() == "high")
+    m = sum(1 for i in issues if i.get("severity", "").lower() == "medium")
+    l = sum(1 for i in issues if i.get("severity", "").lower() == "low")
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("🔴 Critical", c)
+    col2.metric("🟠 High", h)
+    col3.metric("🟡 Medium", m)
+    col4.metric("🟢 Low", l)
+
+    # Issues tabs
+    st.subheader("📋 Issues")
+    tab_all, tab_usab, tab_acc, tab_oth = st.tabs(["All Issues", "Usability", "Accessibility", "Others"])
+    
+    def render_issues(filtered):
+        if not filtered:
+            st.info("No issues")
+            return
+        for issue in filtered:
+            sev = issue.get("severity", "Medium").capitalize()
+            emoji = {"Critical":"🔴","High":"🟠","Medium":"🟡","Low":"🟢"}.get(sev,"⚪")
+            with st.expander(f"{emoji} {issue.get('title')} — {sev}"):
+                st.markdown(f"**Description:** {issue.get('description')}")
+                st.markdown(f"**Recommendation:** {issue.get('recommendation')}")
+                st.caption(f"Rule: {issue.get('related_rule', '—')} | Category: {issue.get('category')}")
+
+    with tab_all:   render_issues(issues)
+    with tab_usab:  render_issues([i for i in issues if i.get("category") == "Usability"])
+    with tab_acc:   render_issues([i for i in issues if i.get("category") == "Accessibility"])
+    with tab_oth:   render_issues([i for i in issues if i.get("category") == "Others"])
+
+    # ====================== FOLLOW-UP AI TEXTBOX (for EVERY audit) ======================
+    st.divider()
+    st.subheader("💬 Ask Groq for more help on this specific analysis")
+    st.caption("You can ask anything: explain an issue, suggest fixes, compare with another heuristic, etc.")
+
+    question = st.text_area("Your question about this audit:", placeholder="Can you give me 3 concrete code examples to fix the visibility of system status issue?", height=100)
+    
+    if st.button("🚀 Ask Groq", type="primary", use_container_width=True):
+        if question.strip() and groq_key:
+            with st.spinner("Groq is thinking..."):
+                try:
+                    client = Groq(api_key=groq_key)
+                    
+                    # Build rich context
+                    context = f"""Website: {audit['url']}
+Timestamp: {audit['timestamp']}
+Scores: Overall {audit.get('overall_score'):.1f}/10 | Usability {audit.get('usability_score'):.1f}/10 | Accessibility {audit.get('accessibility_score'):.1f}/10
+Summary: {audit.get('summary', '')[:1200]}
+Issues: {json.dumps(audit.get('issues', []), indent=2)[:1800]}"""
+
+                    response = client.chat.completions.create(
+                        model="meta-llama/llama-4-scout-17b-16e-instruct",
+                        messages=[
+                            {"role": "system", "content": "You are an expert UX consultant. Answer based ONLY on the previous analysis provided in context."},
+                            {"role": "user", "content": f"{context}\n\nUser question: {question}"}
+                        ],
+                        max_tokens=1200,
+                        temperature=0.3
+                    )
+                    answer = response.choices[0].message.content
+                    st.markdown("### Groq's Answer:")
+                    st.markdown(answer)
+                except Exception as e:
+                    st.error(f"Could not get answer: {str(e)}")
+        else:
+            st.warning("Please enter a question and make sure your Groq key is set")
+
+else:
+    # ================== NEW ANALYSIS MODE ==================
+    url = st.text_input("🌐 Website URL to analyze", placeholder="https://example.com")
+    
+    if st.button("🚀 Analyze Website & Save to History", type="primary", use_container_width=True, disabled=not selected_sets or not groq_key):
+        if not url.startswith(("http://", "https://")):
+            st.error("Valid URL required")
+        else:
+            with st.spinner("Loading page • Taking screenshot • Analyzing with Groq vision..."):
+                try:
+                    # Screenshot
+                    with sync_playwright() as p:
+                        browser = p.chromium.launch(headless=True)
+                        page = browser.new_page(viewport={"width": 1440, "height": 900})
+                        page.goto(url, wait_until="networkidle", timeout=60000)
+                        page.wait_for_timeout(2500)
+                        html = page.content()
+                        screenshot_bytes = page.screenshot(full_page=True)
+                        browser.close()
+
+                    soup = BeautifulSoup(html, "html.parser")
+                    page_text = soup.get_text(separator="\n", strip=True)[:7000]
+                    page_title = soup.title.string.strip() if soup.title else "No title"
+
+                    img_base64 = base64.b64encode(screenshot_bytes).decode()
+
+                    # Rule description
+                    rule_desc = "\n\n".join([f"**{name}:**\n{rule_sets[name]}" for name in selected_sets])
+
+                    client = Groq(api_key=groq_key)
+
+                    system_prompt = "Return ONLY valid JSON. No extra text."
+                    user_prompt = f"""URL: {url}
+Title: {page_title}
+Text: {page_text[:4000]}
+Rule sets: {rule_desc}
+
+Return exactly this JSON:
+{{
+  "overall_score": float,
+  "usability_score": float,
+  "accessibility_score": float,
+  "summary": "2-3 paragraph summary",
+  "issues": [{{ "title": "...", "description": "...", "severity": "Critical|High|Medium|Low", "category": "Usability|Accessibility|Others", "related_rule": "...", "recommendation": "..." }}]
+}}"""
+
+                    response = client.chat.completions.create(
+                        model="meta-llama/llama-4-scout-17b-16e-instruct",
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": [
+                                {"type": "text", "text": user_prompt},
+                                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_base64}"}}
+                            ]}
+                        ],
+                        max_tokens=4500,
+                        temperature=0.25,
+                        response_format={"type": "json_object"}
+                    )
+
+                    analysis = json.loads(response.choices[0].message.content)
+
+                    # Save screenshot
+                    timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    screenshot_path = f"screenshots/{timestamp_str}.png"
+                    with open(screenshot_path, "wb") as f:
+                        f.write(screenshot_bytes)
+
+                    # Build audit record
+                    audit_data = {
+                        "id": str(uuid.uuid4()),
+                        "url": url,
+                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "overall_score": round(analysis.get("overall_score", 5.0), 1),
+                        "usability_score": round(analysis.get("usability_score", 5.0), 1),
+                        "accessibility_score": round(analysis.get("accessibility_score", 5.0), 1),
+                        "summary": analysis.get("summary", ""),
+                        "issues": analysis.get("issues", []),
+                        "selected_rule_sets": selected_sets,
+                        "screenshot_path": screenshot_path
+                    }
+
+                    # Save to history
+                    history = load_history()
+                    history.append(audit_data)
+                    if len(history) > 30:
+                        history = history[-30:]
+                    save_history(history)
+
+                    # Show immediately
+                    st.session_state.current_audit = audit_data
+                    st.success("✅ Analysis complete & saved to history!")
+                    st.rerun()
+
+                except Exception as e:
+                    st.error(f"Error: {str(e)}")
+
+st.caption("Built with Groq + Playwright • History saved locally on your computer • Follow-up questions powered by Groq")
