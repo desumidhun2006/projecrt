@@ -11,17 +11,13 @@ import uuid
 
 # ====================== CONFIG ======================
 st.set_page_config(
-    page_title="Heuristics Analyzer + History",
+    page_title="UX Analyzer",
     page_icon="🔍",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-st.title("Multi Rule-set UX / Accessibility Analyzer")
-st.markdown("""
-Choose rule sets → analyze any URL → **full dashboard**  
-**New:** AI-Persona Simulations (Elderly, Color Blind, Motor Impairment, etc.) + Audit History.
-""")
+st.title("UX Analyzer")
 
 # ====================== FOLDERS & HISTORY FILE ======================
 Path("screenshots").mkdir(exist_ok=True)
@@ -41,16 +37,12 @@ def save_history(history):
         json.dump(history, f, indent=2, ensure_ascii=False)
 
 # ====================== ANALYSIS MODE ======================
-st.subheader("Analysis Mode")
 analysis_mode = st.radio(
-    "Select Analysis Mode",
-    ["AI-Persona Simulation"],
-    captions=["Simulates 5 distinct user personas (Standard, Elderly, Color Blind, Motor Impairment, Non-native) to detect specific friction points."],
+    "Mode",
+    ["AI-Persona Simulation"]
 )
 
 # ====================== RULE SETS (Home Page) ======================
-st.subheader("Select Rule Sets to Evaluate Against")
-
 rule_sets = {
     "Nielsen's 10 Usability Heuristics": """1. Visibility of system status
 2. Match between system and the real world
@@ -85,47 +77,45 @@ Understandable – information and operation must be understandable
 Robust – content must be robust enough"""
 }
 
-all_selected = st.checkbox("✅ Select All Rule Sets", value=True)
+all_selected = st.checkbox("Select All Rules", value=True)
 
 if all_selected:
     selected_sets = list(rule_sets.keys())
-    st.success("All rule sets will be used")
 else:
     selected_sets = st.multiselect(
-        "Choose one or more rule sets",
+        "Select Rules",
         options=list(rule_sets.keys()),
         default=["Nielsen's 10 Usability Heuristics"]
     )
 
 if not selected_sets:
-    st.warning("Please select at least one rule set")
+    st.warning("Select a rule set")
 
 # ====================== SIDEBAR ======================
 with st.sidebar:
-    st.header("📋 Selected Rule Sets")
+    st.subheader("Rules")
     for s in selected_sets:
-        st.markdown(f"• **{s}**")
+        st.markdown(f"- {s}")
 
     st.divider()
     
     groq_key = "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"
 
     st.divider()
-    st.subheader("📜 Audit History (saved locally)")
+    st.subheader("History")
     
     history = load_history()
     
     if history:
-        st.caption(f"Total audits: {len(history)} (last 10 shown)")
         for audit in reversed(history[-10:]):
-            label = f"{audit['url'][:40]}... | {audit['timestamp']} | {audit.get('overall_score', 0):.1f}/10"
+            label = f"{audit['url'][:30]}... ({audit.get('overall_score', 0):.1f})"
             if st.button(label, key=f"load_{audit['id']}"):
                 st.session_state.current_audit = audit
                 st.rerun()
     else:
-        st.info("No audits yet. Analyze a website to start saving history.")
+        st.text("No history.")
 
-    if history and st.button("🗑️ Clear All History", type="secondary"):
+    if history and st.button("Clear History", type="secondary"):
         if os.path.exists(HISTORY_FILE):
             os.remove(HISTORY_FILE)
         for f in Path("screenshots").glob("*.png"):
@@ -133,85 +123,79 @@ with st.sidebar:
         st.session_state.pop("current_audit", None)
         st.rerun()
 
-    st.divider()
-    st.caption("History is stored on your computer (audits_history.json + screenshots folder)")
-
 # ====================== MAIN AREA ======================
 if "current_audit" in st.session_state and st.session_state.current_audit:
     # ================== VIEWING PAST OR CURRENT AUDIT ==================
     audit = st.session_state.current_audit
-    st.success(f"Loaded audit: {audit['url']}")
-    st.caption(audit['timestamp'])
+    st.markdown(f"**{audit['url']}**")
 
     # Scores at top
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.metric("Overall Score", f"{audit.get('overall_score', 0):.1f}/10")
+        st.metric("Overall", f"{audit.get('overall_score', 0):.1f}")
     with col2:
-        st.metric("Usability Score", f"{audit.get('usability_score', 0):.1f}/10")
+        st.metric("Usability", f"{audit.get('usability_score', 0):.1f}")
     with col3:
-        st.metric("Accessibility Score", f"{audit.get('accessibility_score', 0):.1f}/10")
+        st.metric("Accessibility", f"{audit.get('accessibility_score', 0):.1f}")
 
     # Persona Scores (New Feature)
     if "persona_scores" in audit:
         st.divider()
-        st.subheader("👥 AI-Persona Scores")
+        st.subheader("Personas")
         p_scores = audit["persona_scores"]
         p_cols = st.columns(len(p_scores))
         for idx, (persona, score) in enumerate(p_scores.items()):
             with p_cols[idx]:
-                st.metric(persona, f"{score:.1f}/10")
+                st.metric(persona, f"{score:.1f}")
         
         # Persona Walkthrough Summaries
         if "persona_summaries" in audit:
-            with st.expander("📄 View Persona Walkthrough Simulations"):
+            with st.expander("Walkthroughs"):
                 for p_name, p_summary in audit["persona_summaries"].items():
                     st.markdown(f"**{p_name}:** {p_summary}")
 
     # Screenshot (if exists)
     screenshot_path = audit.get("screenshot_path")
     if screenshot_path and os.path.exists(screenshot_path):
-        st.subheader("📸 Screenshot")
+        st.divider()
         st.image(screenshot_path, use_column_width=True)
-    else:
-        st.info("Screenshot not available for this audit")
 
     # Summary
-    st.subheader("📝 Summary")
+    st.subheader("Summary")
     st.markdown(audit.get("summary", "No summary saved"))
 
     # Severity boxes
-    st.subheader("⚠️ Issue Severity")
+    st.subheader("Severity")
     issues = audit.get("issues", [])
     c = sum(1 for i in issues if i.get("severity", "").lower() == "critical")
     h = sum(1 for i in issues if i.get("severity", "").lower() == "high")
     m = sum(1 for i in issues if i.get("severity", "").lower() == "medium")
     l = sum(1 for i in issues if i.get("severity", "").lower() == "low")
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("🔴 Critical", c)
-    col2.metric("🟠 High", h)
-    col3.metric("🟡 Medium", m)
-    col4.metric("🟢 Low", l)
+    col1.metric("Critical", c)
+    col2.metric("High", h)
+    col3.metric("Medium", m)
+    col4.metric("Low", l)
 
     # Issues tabs
-    st.subheader("📋 Issues")
+    st.subheader("Issues")
     
     personas_found = list(set(i.get("affected_persona", "General") for i in issues))
     personas_found.sort()
-    tabs = st.tabs(["All Issues"] + personas_found)
+    tabs = st.tabs(["All"] + personas_found)
     
     def render_issues(filtered):
         if not filtered:
-            st.info("No issues")
+            st.text("None")
             return
         for issue in filtered:
             sev = issue.get("severity", "Medium").capitalize()
             emoji = {"Critical":"🔴","High":"🟠","Medium":"🟡","Low":"🟢"}.get(sev,"⚪")
             affected = issue.get("affected_persona", "General")
-            with st.expander(f"{emoji} {issue.get('title')} — {sev}"):
-                st.markdown(f"**Description:** {issue.get('description')}")
-                st.markdown(f"**Recommendation:** {issue.get('recommendation')}")
-                st.caption(f"Affected Persona: **{affected}** | Category: {issue.get('category')}")
+            with st.expander(f"{emoji} {issue.get('title')}"):
+                st.write(issue.get('description'))
+                st.write(f"**Fix:** {issue.get('recommendation')}")
+                st.caption(f"{affected} | {issue.get('category')}")
 
     with tabs[0]: render_issues(issues)
     for i, p_name in enumerate(personas_found):
@@ -220,14 +204,11 @@ if "current_audit" in st.session_state and st.session_state.current_audit:
 
     # ====================== FOLLOW-UP AI TEXTBOX (for EVERY audit) ======================
     st.divider()
-    st.subheader("💬 Ask Groq for more help on this specific analysis")
-    st.caption("You can ask anything: explain an issue, suggest fixes, compare with another heuristic, etc.")
-
-    question = st.text_area("Your question about this audit:", placeholder="Can you give me 3 concrete code examples to fix the visibility of system status issue?", height=100)
+    question = st.text_area("Ask AI", placeholder="Question...", height=100)
     
-    if st.button("🚀 Ask Groq", type="primary", use_container_width=True):
+    if st.button("Ask", type="primary", use_container_width=True):
         if question.strip() and groq_key:
-            with st.spinner("Groq is thinking..."):
+            with st.spinner("Thinking..."):
                 try:
                     client = Groq(api_key=groq_key)
                     
@@ -250,7 +231,7 @@ Issues: {json.dumps(audit.get('issues', []), indent=2)[:1800]}"""
                         temperature=0.3
                     )
                     answer = response.choices[0].message.content
-                    st.markdown("### Groq's Answer:")
+                    st.markdown("### Answer")
                     st.markdown(answer)
                 except Exception as e:
                     st.error(f"Could not get answer: {str(e)}")
@@ -259,13 +240,13 @@ Issues: {json.dumps(audit.get('issues', []), indent=2)[:1800]}"""
 
 else:
     # ================== NEW ANALYSIS MODE ==================
-    url = st.text_input("🌐 Website URL to analyze", placeholder="https://example.com")
+    url = st.text_input("URL", placeholder="https://")
     
-    if st.button("🚀 Analyze Website & Save to History", type="primary", use_container_width=True, disabled=not selected_sets or not groq_key):
+    if st.button("Analyze", type="primary", use_container_width=True, disabled=not selected_sets or not groq_key):
         if not url.startswith(("http://", "https://")):
-            st.error("Valid URL required")
+            st.error("Invalid URL")
         else:
-            with st.spinner("Loading page • Taking screenshot • Analyzing with Groq vision..."):
+            with st.spinner("Analyzing..."):
                 try:
                     # Screenshot with Playwright
                     with sync_playwright() as p:
@@ -370,10 +351,7 @@ Return exactly this JSON:
 
                     # Show immediately
                     st.session_state.current_audit = audit_data
-                    st.success("✅ Analysis complete & saved to history!")
                     st.rerun()
 
                 except Exception as e:
-                    st.error(f"Error: {str(e)}")
-
-st.caption("Built with Groq + Playwright • History saved locally on your computer • Follow-up questions powered by Groq")
+                    st.error(str(e))
