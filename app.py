@@ -1,14 +1,11 @@
 import streamlit as st
-from groq import Groq
-from playwright.sync_api import sync_playwright
-from bs4 import BeautifulSoup
-import base64
-import json
 import os
-from datetime import datetime
-from pathlib import Path
-import uuid
 import pandas as pd
+import backend  # Import the new backend service
+
+# ====================== API KEY SETUP ======================
+# Try to get from Environment (Best for Docker/Cloud), then Streamlit Secrets, then Fallback
+GROQ_API_KEY = os.getenv("GROQ_API_KEY") or st.secrets.get("GROQ_API_KEY") or "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"
 
 # ====================== CONFIG ======================
 st.set_page_config(
@@ -20,22 +17,8 @@ st.set_page_config(
 
 st.title("UX Analyzer")
 
-# ====================== FOLDERS & HISTORY FILE ======================
-Path("screenshots").mkdir(exist_ok=True)
-HISTORY_FILE = "audits_history.json"
-
-def load_history():
-    if os.path.exists(HISTORY_FILE):
-        try:
-            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except:
-            return []
-    return []
-
-def save_history(history):
-    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-        json.dump(history, f, indent=2, ensure_ascii=False)
+# Initialize DB on app start
+backend.init_db()
 
 # ====================== ANALYSIS MODE ======================
 analysis_mode = st.radio(
@@ -108,12 +91,10 @@ with st.sidebar:
 
     st.divider()
     
-    groq_key = "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"
-
     st.divider()
     st.subheader("History")
     
-    history = load_history()
+    history = backend.get_history(limit=15)
     
     if history:
         for audit in reversed(history[-10:]):
@@ -125,10 +106,7 @@ with st.sidebar:
         st.text("No history.")
 
     if history and st.button("Clear History", type="secondary"):
-        if os.path.exists(HISTORY_FILE):
-            os.remove(HISTORY_FILE)
-        for f in Path("screenshots").glob("*.png"):
-            f.unlink()
+        backend.clear_history()
         st.session_state.pop("current_audit", None)
         st.rerun()
 
@@ -228,30 +206,10 @@ if "current_audit" in st.session_state and st.session_state.current_audit:
     question = st.text_area("Ask AI", placeholder="Question...", height=100)
     
     if st.button("Ask", type="primary", use_container_width=True):
-        if question.strip() and groq_key:
+        if question.strip() and GROQ_API_KEY:
             with st.spinner("Thinking..."):
                 try:
-                    client = Groq(api_key=groq_key)
-                    
-                    # Build rich context
-                    p_context = json.dumps(audit.get('persona_scores', {}), indent=2)
-                    context = f"""Website: {audit['url']}
-Timestamp: {audit['timestamp']}
-Scores: Overall {audit.get('overall_score'):.0f}%
-Persona Scores: {p_context}
-Summary: {audit.get('summary', '')[:1200]}
-Issues: {json.dumps(audit.get('issues', []), indent=2)[:1800]}"""
-
-                    response = client.chat.completions.create(
-                        model="meta-llama/llama-4-scout-17b-16e-instruct",
-                        messages=[
-                            {"role": "system", "content": "You are an expert UX consultant. Answer based ONLY on the previous analysis provided in context."},
-                            {"role": "user", "content": f"{context}\n\nUser question: {question}"}
-                        ],
-                        max_tokens=1200,
-                        temperature=0.3
-                    )
-                    answer = response.choices[0].message.content
+                    answer = backend.ask_ai_followup(question, audit, GROQ_API_KEY)
                     st.markdown("### Answer")
                     st.markdown(answer)
                 except Exception as e:
@@ -328,118 +286,22 @@ else:
 
         target_urls = [u for u in st.session_state.comp_urls if u.strip()]
 
-        if st.button("Compare Sites", type="primary", disabled=len(target_urls) < 2 or not selected_sets or not groq_key):
+        if st.button("Compare Sites", type="primary", disabled=len(target_urls) < 2 or not selected_sets or not GROQ_API_KEY):
             with st.spinner("Analyzing competitors..."):
                 try:
-                    payloads = []
-                    with sync_playwright() as p:
-                        browser = p.chromium.launch(headless=True)
-                        for t_url in target_urls:
-                            if not t_url.startswith("http"): continue
-                            pg = browser.new_page(viewport={"width": 1280, "height": 800})
-                            pg.goto(t_url, wait_until="networkidle", timeout=60000)
-                            pg.evaluate("window.scrollTo(0, 500)")
-                            pg.wait_for_timeout(500)
-                            scr_bytes = pg.screenshot(full_page=True)
-                            html_c = pg.content()
-                            pg.close()
-                            
-                            soup_c = BeautifulSoup(html_c, "html.parser")
-                            txt_c = soup_c.get_text(separator="\n", strip=True)[:3000]
-                            payloads.append({"url": t_url, "txt": txt_c, "img": base64.b64encode(scr_bytes).decode()})
-                        browser.close()
-
-                    client = Groq(api_key=groq_key)
-                    msgs = [{"type": "text", "text": f"Compare these websites based on: {selected_sets}. Return JSON: {{ 'winner': 'URL', 'comparison_report': 'Extremely detailed, extensive professional comparison report (minimum 2000 words). Describe every element, micro-interaction, and design choice in depth. Ensure the content fills at least 3 pages.', 'sites': [ {{ 'url': '...', 'score': 0-100, 'summary': 'Detailed site summary...', 'issues': [ {{ 'title': '...', 'severity': 'Critical|High|Medium|Low', 'description': 'Very descriptive explanation of the issue...' }} ] }} ] }}."}]
-                    for p_data in payloads:
-                        msgs.append({"type": "text", "text": f"URL: {p_data['url']}\n{p_data['txt']}"})
-                        msgs.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{p_data['img']}"}})
-
-                    resp = client.chat.completions.create(
-                        model="meta-llama/llama-4-scout-17b-16e-instruct",
-                        messages=[{"role": "user", "content": msgs}],
-                        max_tokens=4000, temperature=0.2, response_format={"type": "json_object"}
-                    )
-                    st.session_state.comparison_result = json.loads(resp.choices[0].message.content)
+                    # Call Backend
+                    res = backend.compare_competitors(target_urls, selected_sets, GROQ_API_KEY)
+                    st.session_state.comparison_result = res
                     st.rerun()
                 except Exception as e:
                     st.error(str(e))
 
     elif analysis_mode == "Dark Pattern Detector":
         url = st.text_input("URL", placeholder="https://example.com")
-        if st.button("Detect Dark Patterns", type="primary", disabled=not url or not groq_key):
+        if st.button("Detect Dark Patterns", type="primary", disabled=not url or not GROQ_API_KEY):
              with st.spinner("Inspecting source code for manipulation tactics..."):
                 try:
-                    with sync_playwright() as p:
-                        browser = p.chromium.launch(headless=True)
-                        page = browser.new_page()
-                        page.goto(url, wait_until="networkidle", timeout=60000)
-                        html_content = page.content()
-                        # We take a screenshot just for the record/history, even if analysis is code-heavy
-                        screenshot_bytes = page.screenshot(full_page=True)
-                        browser.close()
-
-                    # Truncate HTML to avoid token limits but keep structure
-                    soup = BeautifulSoup(html_content, "html.parser")
-                    # Remove scripts/styles to focus on DOM structure and text
-                    for s in soup(["script", "style", "svg"]):
-                        s.decompose()
-                    clean_html = soup.prettify()[:15000] # Feed significant chunk of DOM
-
-                    client = Groq(api_key=groq_key)
-                    
-                    sys_prompt = "You are a Dark Pattern & Manipulation Detector. Evaluate the interface against ethical usability heuristics (User Control, Error Recovery). Identify tactics like Confirmshaming, Hidden Costs, Forced Continuity, Roach Motel, Urgency, etc."
-                    
-                    user_msg = f"""URL: {url}
-HTML Source Code (Snippet):
-{clean_html}
-
-Analyze the code and structure for manipulative design.
-Return JSON:
-{{
-  "url": "{url}",
-  "manipulation_score": int (0-100, where 100 is extremely manipulative),
-  "summary": "Ultra detailed report (min 1500 words) discussing the ethical integrity of the site. Cite specific heuristics violated.",
-  "analyzed_html_snippet": "Return a representative part of the HTML you analyzed.",
-  "patterns": [
-    {{
-      "name": "Name of Dark Pattern",
-      "description": "Detailed explanation of how this tricks the user...",
-      "code_snippet": "The specific HTML element/class causing this",
-      "ethical_alternative": "A specific UX proposal to fix this without coercion"
-    }}
-  ]
-}}"""
-                    resp = client.chat.completions.create(
-                        model="meta-llama/llama-4-scout-17b-16e-instruct",
-                        messages=[{"role": "system", "content": sys_prompt}, {"role": "user", "content": user_msg}],
-                        response_format={"type": "json_object"},
-                        temperature=0.3
-                    )
-                    
-                    result = json.loads(resp.choices[0].message.content)
-                    
-                    # Save to history? (Optional, mapping manipulation score to history structure)
-                    # We'll map overall_score = 100 - manipulation_score (High integrity = High score)
-                    timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    screenshot_path = f"screenshots/{timestamp_str}.png"
-                    with open(screenshot_path, "wb") as f:
-                        f.write(screenshot_bytes)
-
-                    history_entry = {
-                        "id": str(uuid.uuid4()),
-                        "url": url,
-                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "overall_score": 100 - result.get('manipulation_score', 0),
-                        "summary": result.get('summary', ''),
-                        "screenshot_path": screenshot_path,
-                        # Store raw result for custom loading if needed later
-                        "dark_pattern_data": result
-                    }
-                    history = load_history()
-                    history.append(history_entry)
-                    save_history(history)
-
+                    result = backend.detect_dark_patterns(url, GROQ_API_KEY)
                     st.session_state.dark_pattern_result = result
                     st.rerun()
 
@@ -449,126 +311,18 @@ Return JSON:
     else:
         url = st.text_input("URL", placeholder="https://")
     
-        if st.button("Analyze", type="primary", use_container_width=True, disabled=not selected_sets or not groq_key):
+        if st.button("Analyze", type="primary", use_container_width=True, disabled=not selected_sets or not GROQ_API_KEY):
             if not url.startswith(("http://", "https://")):
                 st.error("Invalid URL")
             else:
                 with st.spinner("Analyzing..."):
                     try:
-                        # Screenshot with Playwright
-                        with sync_playwright() as p:
-                            browser = p.chromium.launch(headless=True)
-                            page = browser.new_page(viewport={"width": 1440, "height": 900})
-                            page.goto(url, wait_until="networkidle", timeout=60000)
-                            
-                            # Simulate user interaction (scroll/zoom actions) for personas
-                            # This ensures lazy loaded elements are present and mimics a "walk through"
-                            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                            page.wait_for_timeout(1000)
-                            page.evaluate("window.scrollTo(0, 0)")
-                            page.wait_for_timeout(500)
-                            
-                            html = page.content()
-                            screenshot_bytes = page.screenshot(full_page=True)
-                            browser.close()
-
-                        soup = BeautifulSoup(html, "html.parser")
-                        page_text = soup.get_text(separator="\n", strip=True)[:7000]
-                        page_title = soup.title.string.strip() if soup.title else "No title"
-
-                        img_base64 = base64.b64encode(screenshot_bytes).decode()
-
-                        # Rule description
-                        rule_desc = "\n\n".join([f"**{name}:**\n{rule_sets[name]}" for name in selected_sets])
-
-                        client = Groq(api_key=groq_key)
-
-                        system_prompt = "Return ONLY valid JSON. No extra text."
-                        user_prompt = f"""URL: {url}
-Title: {page_title}
-Text: {page_text[:4000]}
-Rule sets: {rule_desc}
-
-Perform a simulation of 5 specific user personas walking through this page:
-1. Standard User
-2. Color Blind User (assess color contrast, reliance on color)
-3. Elderly User (small text, complex navigation, confusing flows)
-4. Motor Impairment (small click targets, keyboard navigation needs)
-5. Non-native Speaker (idioms, complex language, unclear icons).
-
-For each persona, simulate a 60-second journey. Estimate their frustration level (0=calm, 100=quits) over time. Record data points at key moments of interaction or confusion.
-
-Return exactly this JSON:
-{{
-  "overall_score": float (0-100),
-  "persona_frustration_over_time": {{
-    "Standard": [{{"time": int (seconds), "frustration": int (0-100)}}],
-    "Color Blind": [{{"time": int (seconds), "frustration": int (0-100)}}],
-    "Elderly": [{{"time": int (seconds), "frustration": int (0-100)}}],
-    "Motor Impairment": [{{"time": int (seconds), "frustration": int (0-100)}}],
-    "Non-native Speaker": [{{"time": int (seconds), "frustration": int (0-100)}}]
-  }},
-  "summary": "Extremely detailed, comprehensive professional audit report (minimum 2000 words). Describe the UI structure, color usage, navigation, and accessibility in exhaustive detail to ensure a 3-page report. Even small details must be elaborated.",
-  "persona_summaries": {{ "Standard": "...", "Color Blind": "...", "Elderly": "...", "Motor Impairment": "...", "Non-native Speaker": "..." }},
-  "issues": [{{ "title": "...", "description": "Very descriptive explanation of the issue (min 50 words)...", "severity": "Critical|High|Medium|Low", "affected_persona": "Standard|Color Blind|Elderly|Motor Impairment|Non-native Speaker", "category": "Usability|Accessibility", "recommendation": "Detailed fix..." }}]
-}}"""
-
-                        response = client.chat.completions.create(
-                            model="meta-llama/llama-4-scout-17b-16e-instruct",
-                            messages=[
-                                {"role": "system", "content": system_prompt},
-                                {"role": "user", "content": [
-                                    {"type": "text", "text": user_prompt},
-                                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_base64}"}}
-                                ]}
-                            ],
-                            max_tokens=4500,
-                            temperature=0.25,
-                            response_format={"type": "json_object"}
-                        )
-
-                        analysis = json.loads(response.choices[0].message.content)
-
-                        # Save screenshot
-                        timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        screenshot_path = f"screenshots/{timestamp_str}.png"
-                        with open(screenshot_path, "wb") as f:
-                            f.write(screenshot_bytes)
-
-                        # Calculate usability/accessibility scores from final frustration
-                        frustration_data = analysis.get("persona_frustration_over_time", {})
-                        std_frustration = frustration_data.get("Standard", [])
-                        motor_frustration = frustration_data.get("Motor Impairment", [])
+                        # Call Backend
+                        # We pass the full dictionary of selected rules if needed, 
+                        # but the backend expects {Name: Description}
+                        chosen_rules = {k: rule_sets[k] for k in selected_sets}
+                        audit_data = backend.analyze_ux_audit(url, chosen_rules, GROQ_API_KEY)
                         
-                        final_std_frustration = std_frustration[-1]['frustration'] if std_frustration else 50
-                        final_motor_frustration = motor_frustration[-1]['frustration'] if motor_frustration else 50
-
-                        usability_score = 100 - final_std_frustration
-                        accessibility_score = 100 - final_motor_frustration
-
-                        # Build audit record
-                        audit_data = {
-                            "id": str(uuid.uuid4()),
-                            "url": url,
-                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            "overall_score": round(analysis.get("overall_score", 50), 1),
-                            "usability_score": usability_score,
-                            "accessibility_score": accessibility_score,
-                            "persona_frustration_over_time": frustration_data,
-                            "persona_summaries": analysis.get("persona_summaries", {}),
-                            "summary": analysis.get("summary", ""),
-                            "issues": analysis.get("issues", []),
-                            "selected_rule_sets": selected_sets,
-                            "screenshot_path": screenshot_path
-                        }
-
-                        # Save to history
-                        history = load_history()
-                        history.append(audit_data)
-                        if len(history) > 30:
-                            history = history[-30:]
-                        save_history(history)
-
                         # Show immediately
                         st.session_state.current_audit = audit_data
                         st.rerun()
