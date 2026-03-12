@@ -93,12 +93,33 @@ def create_pdf(mode, data):
                     pdf.multi_cell(0, 10, f"- [{clean(i.get('severity', ''))}] {clean(i.get('title', ''))}")
                 pdf.ln(5)
 
+    elif mode == "dark_patterns":
+        pdf.set_font("Arial", "B", 16)
+        pdf.cell(0, 10, "Dark Pattern & Manipulation Audit", ln=True)
+        pdf.set_font("Arial", "I", 10)
+        pdf.cell(0, 10, f"Target: {clean(data.get('url', ''))}", ln=True)
+        pdf.cell(0, 10, f"Manipulation Score: {data.get('manipulation_score', 0)}/100 (Lower is better)", ln=True)
+        pdf.ln(10)
+        
+        section("Audit Summary", data.get("summary", ""))
+        
+        if "patterns" in data:
+            pdf.set_font("Arial", "B", 14)
+            pdf.cell(0, 10, "Detected Dark Patterns", ln=True)
+            for p in data["patterns"]:
+                pdf.set_font("Arial", "B", 12)
+                pdf.cell(0, 10, f"🚫 {clean(p.get('name', ''))}", ln=True)
+                pdf.multi_cell(0, 10, f"Description: {clean(p.get('description', ''))}")
+                pdf.multi_cell(0, 10, f"Code Context: {clean(p.get('code_snippet', ''))}")
+                pdf.multi_cell(0, 10, f"✅ Ethical Alternative: {clean(p.get('ethical_alternative', ''))}")
+                pdf.ln(5)
+
     return pdf.output(dest='S').encode('latin-1')
 
 # ====================== ANALYSIS MODE ======================
 analysis_mode = st.radio(
     "Mode",
-    ["AI-Persona Simulation", "Competitor Comparison"]
+    ["AI-Persona Simulation", "Competitor Comparison", "Dark Pattern Detector"]
 )
 
 # ====================== RULE SETS (Home Page) ======================
@@ -354,6 +375,40 @@ elif "comparison_result" in st.session_state and st.session_state.comparison_res
         del st.session_state.comparison_result
         st.rerun()
 
+elif "dark_pattern_result" in st.session_state and st.session_state.dark_pattern_result:
+    res = st.session_state.dark_pattern_result
+    st.subheader("🕵️‍♀️ Dark Pattern & Manipulation Report")
+    
+    # Manipulation Score Gauge
+    score = res.get('manipulation_score', 0)
+    st.progress(score / 100, text=f"Manipulation Score: {score}/100 (High = Unethical)")
+    
+    st.download_button(
+        "📥 Download PDF Report",
+        data=create_pdf("dark_patterns", res),
+        file_name="dark_pattern_report.pdf",
+        mime="application/pdf"
+    )
+    
+    st.markdown("### Executive Summary")
+    st.write(res.get('summary', ''))
+
+    st.subheader("Source Code Analysis")
+    with st.expander("View Analyzed Source Code Snippets", expanded=False):
+        st.code(res.get('analyzed_html_snippet', '<!-- No snippet returned -->'), language='html')
+
+    st.subheader("Detected Patterns & Ethical Alternatives")
+    for p in res.get('patterns', []):
+        with st.expander(f"🚫 {p.get('name', 'Unknown Pattern')}"):
+            st.markdown(f"**Description:** {p.get('description')}")
+            st.markdown("**Violating Code:**")
+            st.code(p.get('code_snippet', ''), language='html')
+            st.success(f"**✅ Ethical Alternative:** {p.get('ethical_alternative')}")
+
+    if st.button("New Analysis", type="primary"):
+        del st.session_state.dark_pattern_result
+        st.rerun()
+
 else:
     # ================== NEW ANALYSIS MODE ==================
     if analysis_mode == "Competitor Comparison":
@@ -409,6 +464,87 @@ else:
                     st.rerun()
                 except Exception as e:
                     st.error(str(e))
+
+    elif analysis_mode == "Dark Pattern Detector":
+        url = st.text_input("URL", placeholder="https://example.com")
+        if st.button("Detect Dark Patterns", type="primary", disabled=not url or not groq_key):
+             with st.spinner("Inspecting source code for manipulation tactics..."):
+                try:
+                    with sync_playwright() as p:
+                        browser = p.chromium.launch(headless=True)
+                        page = browser.new_page()
+                        page.goto(url, wait_until="networkidle", timeout=60000)
+                        html_content = page.content()
+                        # We take a screenshot just for the record/history, even if analysis is code-heavy
+                        screenshot_bytes = page.screenshot(full_page=True)
+                        browser.close()
+
+                    # Truncate HTML to avoid token limits but keep structure
+                    soup = BeautifulSoup(html_content, "html.parser")
+                    # Remove scripts/styles to focus on DOM structure and text
+                    for s in soup(["script", "style", "svg"]):
+                        s.decompose()
+                    clean_html = soup.prettify()[:15000] # Feed significant chunk of DOM
+
+                    client = Groq(api_key=groq_key)
+                    
+                    sys_prompt = "You are a Dark Pattern & Manipulation Detector. Evaluate the interface against ethical usability heuristics (User Control, Error Recovery). Identify tactics like Confirmshaming, Hidden Costs, Forced Continuity, Roach Motel, Urgency, etc."
+                    
+                    user_msg = f"""URL: {url}
+HTML Source Code (Snippet):
+{clean_html}
+
+Analyze the code and structure for manipulative design.
+Return JSON:
+{{
+  "url": "{url}",
+  "manipulation_score": int (0-100, where 100 is extremely manipulative),
+  "summary": "Ultra detailed report (min 1500 words) discussing the ethical integrity of the site. Cite specific heuristics violated.",
+  "analyzed_html_snippet": "Return a representative part of the HTML you analyzed.",
+  "patterns": [
+    {{
+      "name": "Name of Dark Pattern",
+      "description": "Detailed explanation of how this tricks the user...",
+      "code_snippet": "The specific HTML element/class causing this",
+      "ethical_alternative": "A specific UX proposal to fix this without coercion"
+    }}
+  ]
+}}"""
+                    resp = client.chat.completions.create(
+                        model="meta-llama/llama-4-scout-17b-16e-instruct",
+                        messages=[{"role": "system", "content": sys_prompt}, {"role": "user", "content": user_msg}],
+                        response_format={"type": "json_object"},
+                        temperature=0.3
+                    )
+                    
+                    result = json.loads(resp.choices[0].message.content)
+                    
+                    # Save to history? (Optional, mapping manipulation score to history structure)
+                    # We'll map overall_score = 100 - manipulation_score (High integrity = High score)
+                    timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    screenshot_path = f"screenshots/{timestamp_str}.png"
+                    with open(screenshot_path, "wb") as f:
+                        f.write(screenshot_bytes)
+
+                    history_entry = {
+                        "id": str(uuid.uuid4()),
+                        "url": url,
+                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "overall_score": 100 - result.get('manipulation_score', 0),
+                        "summary": result.get('summary', ''),
+                        "screenshot_path": screenshot_path,
+                        # Store raw result for custom loading if needed later
+                        "dark_pattern_data": result
+                    }
+                    history = load_history()
+                    history.append(history_entry)
+                    save_history(history)
+
+                    st.session_state.dark_pattern_result = result
+                    st.rerun()
+
+                except Exception as e:
+                    st.error(f"Analysis failed: {str(e)}")
 
     else:
         url = st.text_input("URL", placeholder="https://")
