@@ -152,13 +152,22 @@ if "current_audit" in st.session_state and st.session_state.current_audit:
         st.divider()
         st.subheader("Persona Frustration Levels Over Time")
         frustration_data = audit["persona_frustration_over_time"]
-        
+
+        all_series = []
         for persona, data_points in frustration_data.items():
             if data_points:
-                st.markdown(f"#### {persona}")
-                df = pd.DataFrame(data_points).set_index('time')
-                df.rename(columns={'frustration': 'Frustration (0-100)'}, inplace=True)
-                st.line_chart(df)
+                # Create a pandas Series for each persona with time as the index
+                s = pd.Series(
+                    [dp['frustration'] for dp in data_points],
+                    index=[dp['time'] for dp in data_points],
+                    name=persona
+                )
+                all_series.append(s)
+
+        if all_series:
+            # Combine all series into a single DataFrame, sort by time, and fill gaps
+            combined_df = pd.concat(all_series, axis=1).sort_index().ffill().bfill()
+            st.line_chart(combined_df)
 
         # Persona Walkthrough Summaries
         if "persona_summaries" in audit:
