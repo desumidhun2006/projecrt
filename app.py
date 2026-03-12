@@ -93,6 +93,10 @@ if not selected_sets:
 
 # ====================== SIDEBAR ======================
 with st.sidebar:
+    if st.button("➕ New Audit", type="primary", use_container_width=True):
+        st.session_state.current_audit = None
+        st.rerun()
+
     st.subheader("Rules")
     for s in selected_sets:
         st.markdown(f"- {s}")
