@@ -20,7 +20,7 @@ st.set_page_config(
 st.title("Multi Rule-set UX / Accessibility Analyzer")
 st.markdown("""
 Choose rule sets → analyze any URL → **full dashboard**  
-**New:** Audit History (saved locally on your computer) + Ask AI follow-up questions for **every** audit!
+**New:** AI-Persona Simulations (Elderly, Color Blind, Motor Impairment, etc.) + Audit History.
 """)
 
 # ====================== FOLDERS & HISTORY FILE ======================
@@ -39,6 +39,14 @@ def load_history():
 def save_history(history):
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump(history, f, indent=2, ensure_ascii=False)
+
+# ====================== ANALYSIS MODE ======================
+st.subheader("Analysis Mode")
+analysis_mode = st.radio(
+    "Select Analysis Mode",
+    ["AI-Persona Simulation"],
+    captions=["Simulates 5 distinct user personas (Standard, Elderly, Color Blind, Motor Impairment, Non-native) to detect specific friction points."],
+)
 
 # ====================== RULE SETS (Home Page) ======================
 st.subheader("Select Rule Sets to Evaluate Against")
@@ -144,6 +152,22 @@ if "current_audit" in st.session_state and st.session_state.current_audit:
     with col3:
         st.metric("Accessibility Score", f"{audit.get('accessibility_score', 0):.1f}/10")
 
+    # Persona Scores (New Feature)
+    if "persona_scores" in audit:
+        st.divider()
+        st.subheader("👥 AI-Persona Scores")
+        p_scores = audit["persona_scores"]
+        p_cols = st.columns(len(p_scores))
+        for idx, (persona, score) in enumerate(p_scores.items()):
+            with p_cols[idx]:
+                st.metric(persona, f"{score:.1f}/10")
+        
+        # Persona Walkthrough Summaries
+        if "persona_summaries" in audit:
+            with st.expander("📄 View Persona Walkthrough Simulations"):
+                for p_name, p_summary in audit["persona_summaries"].items():
+                    st.markdown(f"**{p_name}:** {p_summary}")
+
     # Screenshot (if exists)
     screenshot_path = audit.get("screenshot_path")
     if screenshot_path and os.path.exists(screenshot_path):
@@ -171,7 +195,10 @@ if "current_audit" in st.session_state and st.session_state.current_audit:
 
     # Issues tabs
     st.subheader("📋 Issues")
-    tab_all, tab_usab, tab_acc, tab_oth = st.tabs(["All Issues", "Usability", "Accessibility", "Others"])
+    
+    personas_found = list(set(i.get("affected_persona", "General") for i in issues))
+    personas_found.sort()
+    tabs = st.tabs(["All Issues"] + personas_found)
     
     def render_issues(filtered):
         if not filtered:
@@ -180,15 +207,16 @@ if "current_audit" in st.session_state and st.session_state.current_audit:
         for issue in filtered:
             sev = issue.get("severity", "Medium").capitalize()
             emoji = {"Critical":"🔴","High":"🟠","Medium":"🟡","Low":"🟢"}.get(sev,"⚪")
+            affected = issue.get("affected_persona", "General")
             with st.expander(f"{emoji} {issue.get('title')} — {sev}"):
                 st.markdown(f"**Description:** {issue.get('description')}")
                 st.markdown(f"**Recommendation:** {issue.get('recommendation')}")
-                st.caption(f"Rule: {issue.get('related_rule', '—')} | Category: {issue.get('category')}")
+                st.caption(f"Affected Persona: **{affected}** | Category: {issue.get('category')}")
 
-    with tab_all:   render_issues(issues)
-    with tab_usab:  render_issues([i for i in issues if i.get("category") == "Usability"])
-    with tab_acc:   render_issues([i for i in issues if i.get("category") == "Accessibility"])
-    with tab_oth:   render_issues([i for i in issues if i.get("category") == "Others"])
+    with tabs[0]: render_issues(issues)
+    for i, p_name in enumerate(personas_found):
+        with tabs[i+1]:
+            render_issues([x for x in issues if x.get("affected_persona", "General") == p_name])
 
     # ====================== FOLLOW-UP AI TEXTBOX (for EVERY audit) ======================
     st.divider()
@@ -204,9 +232,11 @@ if "current_audit" in st.session_state and st.session_state.current_audit:
                     client = Groq(api_key=groq_key)
                     
                     # Build rich context
+                    p_context = json.dumps(audit.get('persona_scores', {}), indent=2)
                     context = f"""Website: {audit['url']}
 Timestamp: {audit['timestamp']}
-Scores: Overall {audit.get('overall_score'):.1f}/10 | Usability {audit.get('usability_score'):.1f}/10 | Accessibility {audit.get('accessibility_score'):.1f}/10
+Scores: Overall {audit.get('overall_score'):.1f}/10
+Persona Scores: {p_context}
 Summary: {audit.get('summary', '')[:1200]}
 Issues: {json.dumps(audit.get('issues', []), indent=2)[:1800]}"""
 
@@ -237,12 +267,19 @@ else:
         else:
             with st.spinner("Loading page • Taking screenshot • Analyzing with Groq vision..."):
                 try:
-                    # Screenshot
+                    # Screenshot with Playwright
                     with sync_playwright() as p:
                         browser = p.chromium.launch(headless=True)
                         page = browser.new_page(viewport={"width": 1440, "height": 900})
                         page.goto(url, wait_until="networkidle", timeout=60000)
-                        page.wait_for_timeout(2500)
+                        
+                        # Simulate user interaction (scroll/zoom actions) for personas
+                        # This ensures lazy loaded elements are present and mimics a "walk through"
+                        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                        page.wait_for_timeout(1000)
+                        page.evaluate("window.scrollTo(0, 0)")
+                        page.wait_for_timeout(500)
+                        
                         html = page.content()
                         screenshot_bytes = page.screenshot(full_page=True)
                         browser.close()
@@ -264,13 +301,26 @@ Title: {page_title}
 Text: {page_text[:4000]}
 Rule sets: {rule_desc}
 
+Perform a simulation of 5 specific user personas walking through this page:
+1. Standard User
+2. Color Blind User (assess color contrast, reliance on color)
+3. Elderly User (small text, complex navigation, confusing flows)
+4. Motor Impairment (small click targets, keyboard navigation needs)
+5. Non-native Speaker (idioms, complex language, unclear icons)
+
 Return exactly this JSON:
 {{
   "overall_score": float,
-  "usability_score": float,
-  "accessibility_score": float,
+  "persona_scores": {{
+    "Standard": float,
+    "Color Blind": float,
+    "Elderly": float,
+    "Motor Impairment": float,
+    "Non-native Speaker": float
+  }},
   "summary": "2-3 paragraph summary",
-  "issues": [{{ "title": "...", "description": "...", "severity": "Critical|High|Medium|Low", "category": "Usability|Accessibility|Others", "related_rule": "...", "recommendation": "..." }}]
+  "persona_summaries": {{ "Standard": "...", "Color Blind": "...", "Elderly": "...", "Motor Impairment": "...", "Non-native Speaker": "..." }},
+  "issues": [{{ "title": "...", "description": "...", "severity": "Critical|High|Medium|Low", "affected_persona": "Standard|Color Blind|Elderly|Motor Impairment|Non-native Speaker", "category": "Usability|Accessibility", "recommendation": "..." }}]
 }}"""
 
                     response = client.chat.completions.create(
@@ -301,8 +351,10 @@ Return exactly this JSON:
                         "url": url,
                         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         "overall_score": round(analysis.get("overall_score", 5.0), 1),
-                        "usability_score": round(analysis.get("usability_score", 5.0), 1),
-                        "accessibility_score": round(analysis.get("accessibility_score", 5.0), 1),
+                        "usability_score": round(analysis.get("persona_scores", {}).get("Standard", 5.0), 1),
+                        "accessibility_score": round(analysis.get("persona_scores", {}).get("Motor Impairment", 5.0), 1),
+                        "persona_scores": analysis.get("persona_scores", {}),
+                        "persona_summaries": analysis.get("persona_summaries", {}),
                         "summary": analysis.get("summary", ""),
                         "issues": analysis.get("issues", []),
                         "selected_rule_sets": selected_sets,
