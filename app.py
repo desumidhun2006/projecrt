@@ -39,7 +39,7 @@ def save_history(history):
 # ====================== ANALYSIS MODE ======================
 analysis_mode = st.radio(
     "Mode",
-    ["AI-Persona Simulation"]
+    ["AI-Persona Simulation", "Competitor Comparison"]
 )
 
 # ====================== RULE SETS (Home Page) ======================
@@ -95,6 +95,8 @@ if not selected_sets:
 with st.sidebar:
     if st.button("➕ New Audit", type="primary", use_container_width=True):
         st.session_state.current_audit = None
+        if "comparison_result" in st.session_state:
+            del st.session_state.comparison_result
         st.rerun()
 
     st.subheader("Rules")
@@ -242,46 +244,109 @@ Issues: {json.dumps(audit.get('issues', []), indent=2)[:1800]}"""
         else:
             st.warning("Please enter a question and make sure your Groq key is set")
 
+elif "comparison_result" in st.session_state and st.session_state.comparison_result:
+    res = st.session_state.comparison_result
+    st.subheader("⚔️ Competitor Comparison")
+    
+    st.success(f"**Winner:** {res.get('winner', 'N/A')}")
+    st.info("\n".join([f"• {i}" for i in res.get('insights', [])]))
+    
+    rows = []
+    for item in res.get('comparison_table', []):
+        r = {"Criterion": item['criterion'], "Notes": item['notes']}
+        r.update(item.get('scores', {}))
+        rows.append(r)
+    st.dataframe(rows, use_container_width=True)
+    
+    if st.button("New Analysis", type="primary"):
+        del st.session_state.comparison_result
+        st.rerun()
+
 else:
     # ================== NEW ANALYSIS MODE ==================
-    url = st.text_input("URL", placeholder="https://")
-    
-    if st.button("Analyze", type="primary", use_container_width=True, disabled=not selected_sets or not groq_key):
-        if not url.startswith(("http://", "https://")):
-            st.error("Invalid URL")
-        else:
-            with st.spinner("Analyzing..."):
+    if analysis_mode == "Competitor Comparison":
+        c1, c2 = st.columns(2)
+        u1 = c1.text_input("URL 1", placeholder="https://airbnb.com")
+        u2 = c2.text_input("URL 2", placeholder="https://booking.com")
+        u3 = st.text_input("URL 3 (Optional)", placeholder="https://expedia.com")
+        target_urls = [u for u in [u1, u2, u3] if u.strip()]
+
+        if st.button("Compare Sites", type="primary", disabled=len(target_urls) < 2 or not selected_sets or not groq_key):
+            with st.spinner("Analyzing competitors..."):
                 try:
-                    # Screenshot with Playwright
+                    payloads = []
                     with sync_playwright() as p:
                         browser = p.chromium.launch(headless=True)
-                        page = browser.new_page(viewport={"width": 1440, "height": 900})
-                        page.goto(url, wait_until="networkidle", timeout=60000)
-                        
-                        # Simulate user interaction (scroll/zoom actions) for personas
-                        # This ensures lazy loaded elements are present and mimics a "walk through"
-                        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                        page.wait_for_timeout(1000)
-                        page.evaluate("window.scrollTo(0, 0)")
-                        page.wait_for_timeout(500)
-                        
-                        html = page.content()
-                        screenshot_bytes = page.screenshot(full_page=True)
+                        for t_url in target_urls:
+                            if not t_url.startswith("http"): continue
+                            pg = browser.new_page(viewport={"width": 1280, "height": 800})
+                            pg.goto(t_url, wait_until="networkidle", timeout=60000)
+                            pg.evaluate("window.scrollTo(0, 500)")
+                            pg.wait_for_timeout(500)
+                            scr_bytes = pg.screenshot(full_page=True)
+                            html_c = pg.content()
+                            pg.close()
+                            
+                            soup_c = BeautifulSoup(html_c, "html.parser")
+                            txt_c = soup_c.get_text(separator="\n", strip=True)[:3000]
+                            payloads.append({"url": t_url, "txt": txt_c, "img": base64.b64encode(scr_bytes).decode()})
                         browser.close()
 
-                    soup = BeautifulSoup(html, "html.parser")
-                    page_text = soup.get_text(separator="\n", strip=True)[:7000]
-                    page_title = soup.title.string.strip() if soup.title else "No title"
-
-                    img_base64 = base64.b64encode(screenshot_bytes).decode()
-
-                    # Rule description
-                    rule_desc = "\n\n".join([f"**{name}:**\n{rule_sets[name]}" for name in selected_sets])
-
                     client = Groq(api_key=groq_key)
+                    msgs = [{"type": "text", "text": f"Compare these websites based on: {selected_sets}. Return JSON: {{ 'comparison_table': [{{ 'criterion': '...', 'scores': {{ '{target_urls[0]}': 85, ... }}, 'notes': '...' }}], 'winner': 'URL', 'insights': ['...'] }}."}]
+                    for p_data in payloads:
+                        msgs.append({"type": "text", "text": f"URL: {p_data['url']}\n{p_data['txt']}"})
+                        msgs.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{p_data['img']}"}})
 
-                    system_prompt = "Return ONLY valid JSON. No extra text."
-                    user_prompt = f"""URL: {url}
+                    resp = client.chat.completions.create(
+                        model="meta-llama/llama-4-scout-17b-16e-instruct",
+                        messages=[{"role": "user", "content": msgs}],
+                        max_tokens=4000, temperature=0.2, response_format={"type": "json_object"}
+                    )
+                    st.session_state.comparison_result = json.loads(resp.choices[0].message.content)
+                    st.rerun()
+                except Exception as e:
+                    st.error(str(e))
+
+    else:
+        url = st.text_input("URL", placeholder="https://")
+    
+        if st.button("Analyze", type="primary", use_container_width=True, disabled=not selected_sets or not groq_key):
+            if not url.startswith(("http://", "https://")):
+                st.error("Invalid URL")
+            else:
+                with st.spinner("Analyzing..."):
+                    try:
+                        # Screenshot with Playwright
+                        with sync_playwright() as p:
+                            browser = p.chromium.launch(headless=True)
+                            page = browser.new_page(viewport={"width": 1440, "height": 900})
+                            page.goto(url, wait_until="networkidle", timeout=60000)
+                            
+                            # Simulate user interaction (scroll/zoom actions) for personas
+                            # This ensures lazy loaded elements are present and mimics a "walk through"
+                            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                            page.wait_for_timeout(1000)
+                            page.evaluate("window.scrollTo(0, 0)")
+                            page.wait_for_timeout(500)
+                            
+                            html = page.content()
+                            screenshot_bytes = page.screenshot(full_page=True)
+                            browser.close()
+
+                        soup = BeautifulSoup(html, "html.parser")
+                        page_text = soup.get_text(separator="\n", strip=True)[:7000]
+                        page_title = soup.title.string.strip() if soup.title else "No title"
+
+                        img_base64 = base64.b64encode(screenshot_bytes).decode()
+
+                        # Rule description
+                        rule_desc = "\n\n".join([f"**{name}:**\n{rule_sets[name]}" for name in selected_sets])
+
+                        client = Groq(api_key=groq_key)
+
+                        system_prompt = "Return ONLY valid JSON. No extra text."
+                        user_prompt = f"""URL: {url}
 Title: {page_title}
 Text: {page_text[:4000]}
 Rule sets: {rule_desc}
@@ -308,54 +373,54 @@ Return exactly this JSON:
   "issues": [{{ "title": "...", "description": "...", "severity": "Critical|High|Medium|Low", "affected_persona": "Standard|Color Blind|Elderly|Motor Impairment|Non-native Speaker", "category": "Usability|Accessibility", "recommendation": "..." }}]
 }}"""
 
-                    response = client.chat.completions.create(
-                        model="meta-llama/llama-4-scout-17b-16e-instruct",
-                        messages=[
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": [
-                                {"type": "text", "text": user_prompt},
-                                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_base64}"}}
-                            ]}
-                        ],
-                        max_tokens=4500,
-                        temperature=0.25,
-                        response_format={"type": "json_object"}
-                    )
+                        response = client.chat.completions.create(
+                            model="meta-llama/llama-4-scout-17b-16e-instruct",
+                            messages=[
+                                {"role": "system", "content": system_prompt},
+                                {"role": "user", "content": [
+                                    {"type": "text", "text": user_prompt},
+                                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_base64}"}}
+                                ]}
+                            ],
+                            max_tokens=4500,
+                            temperature=0.25,
+                            response_format={"type": "json_object"}
+                        )
 
-                    analysis = json.loads(response.choices[0].message.content)
+                        analysis = json.loads(response.choices[0].message.content)
 
-                    # Save screenshot
-                    timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    screenshot_path = f"screenshots/{timestamp_str}.png"
-                    with open(screenshot_path, "wb") as f:
-                        f.write(screenshot_bytes)
+                        # Save screenshot
+                        timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        screenshot_path = f"screenshots/{timestamp_str}.png"
+                        with open(screenshot_path, "wb") as f:
+                            f.write(screenshot_bytes)
 
-                    # Build audit record
-                    audit_data = {
-                        "id": str(uuid.uuid4()),
-                        "url": url,
-                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "overall_score": round(analysis.get("overall_score", 50), 1),
-                        "usability_score": round(analysis.get("persona_scores", {}).get("Standard", 50), 1),
-                        "accessibility_score": round(analysis.get("persona_scores", {}).get("Motor Impairment", 50), 1),
-                        "persona_scores": analysis.get("persona_scores", {}),
-                        "persona_summaries": analysis.get("persona_summaries", {}),
-                        "summary": analysis.get("summary", ""),
-                        "issues": analysis.get("issues", []),
-                        "selected_rule_sets": selected_sets,
-                        "screenshot_path": screenshot_path
-                    }
+                        # Build audit record
+                        audit_data = {
+                            "id": str(uuid.uuid4()),
+                            "url": url,
+                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "overall_score": round(analysis.get("overall_score", 50), 1),
+                            "usability_score": round(analysis.get("persona_scores", {}).get("Standard", 50), 1),
+                            "accessibility_score": round(analysis.get("persona_scores", {}).get("Motor Impairment", 50), 1),
+                            "persona_scores": analysis.get("persona_scores", {}),
+                            "persona_summaries": analysis.get("persona_summaries", {}),
+                            "summary": analysis.get("summary", ""),
+                            "issues": analysis.get("issues", []),
+                            "selected_rule_sets": selected_sets,
+                            "screenshot_path": screenshot_path
+                        }
 
-                    # Save to history
-                    history = load_history()
-                    history.append(audit_data)
-                    if len(history) > 30:
-                        history = history[-30:]
-                    save_history(history)
+                        # Save to history
+                        history = load_history()
+                        history.append(audit_data)
+                        if len(history) > 30:
+                            history = history[-30:]
+                        save_history(history)
 
-                    # Show immediately
-                    st.session_state.current_audit = audit_data
-                    st.rerun()
+                        # Show immediately
+                        st.session_state.current_audit = audit_data
+                        st.rerun()
 
-                except Exception as e:
-                    st.error(str(e))
+                    except Exception as e:
+                        st.error(str(e))
