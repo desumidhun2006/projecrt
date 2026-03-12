@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 import uuid
 import pandas as pd
+from fpdf import FPDF
 
 # ====================== CONFIG ======================
 st.set_page_config(
@@ -36,6 +37,63 @@ def load_history():
 def save_history(history):
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump(history, f, indent=2, ensure_ascii=False)
+
+def create_pdf(mode, data):
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.set_font("Arial", size=12)
+
+    def clean(text):
+        # Simple sanitization for FPDF's latin-1 limitation
+        return text.encode('latin-1', 'replace').decode('latin-1') if text else ""
+
+    def section(title, body):
+        pdf.set_font("Arial", "B", 14)
+        pdf.cell(0, 10, clean(title), ln=True)
+        pdf.set_font("Arial", "", 12)
+        pdf.multi_cell(0, 10, clean(body))
+        pdf.ln(5)
+
+    if mode == "audit":
+        pdf.set_font("Arial", "B", 16)
+        pdf.cell(0, 10, f"UX Audit: {clean(data.get('url', ''))}", ln=True)
+        pdf.set_font("Arial", "I", 10)
+        pdf.cell(0, 10, f"Date: {data.get('timestamp', '')} | Score: {data.get('overall_score', 0)}%", ln=True)
+        pdf.ln(10)
+        
+        section("Executive Summary", data.get("summary", ""))
+        
+        if "issues" in data:
+            pdf.set_font("Arial", "B", 14)
+            pdf.cell(0, 10, "Key Issues", ln=True)
+            for issue in data["issues"]:
+                pdf.set_font("Arial", "B", 11)
+                pdf.cell(0, 10, f"[{clean(issue.get('severity', ''))}] {clean(issue.get('title', ''))}", ln=True)
+                pdf.set_font("Arial", "", 11)
+                pdf.multi_cell(0, 10, f"Desc: {clean(issue.get('description', ''))}")
+                pdf.multi_cell(0, 10, f"Fix: {clean(issue.get('recommendation', ''))}")
+                pdf.ln(2)
+
+    elif mode == "comparison":
+        pdf.set_font("Arial", "B", 16)
+        pdf.cell(0, 10, "Competitor Analysis Report", ln=True)
+        pdf.set_font("Arial", "B", 12)
+        pdf.cell(0, 10, f"Winner: {clean(data.get('winner', ''))}", ln=True)
+        pdf.ln(10)
+        section("Detailed Comparison", data.get("comparison_report", ""))
+        
+        for site in data.get("sites", []):
+            section(f"Site: {site.get('url', '')} ({site.get('score', 0)}%)", site.get("summary", ""))
+            if "issues" in site:
+                pdf.set_font("Arial", "B", 11)
+                pdf.cell(0, 10, "Top Issues:", ln=True)
+                pdf.set_font("Arial", "", 11)
+                for i in site["issues"]:
+                    pdf.multi_cell(0, 10, f"- [{clean(i.get('severity', ''))}] {clean(i.get('title', ''))}")
+                pdf.ln(5)
+
+    return pdf.output(dest='S').encode('latin-1')
 
 # ====================== ANALYSIS MODE ======================
 analysis_mode = st.radio(
@@ -184,6 +242,13 @@ if "current_audit" in st.session_state and st.session_state.current_audit:
     # Summary
     st.subheader("Summary")
     st.markdown(audit.get("summary", "No summary saved"))
+    
+    st.download_button(
+        "📥 Download PDF Report",
+        data=create_pdf("audit", audit),
+        file_name=f"audit_report_{audit.get('id', 'doc')}.pdf",
+        mime="application/pdf"
+    )
 
     # Severity boxes
     st.subheader("Severity")
@@ -267,6 +332,13 @@ elif "comparison_result" in st.session_state and st.session_state.comparison_res
     st.markdown("### Comparison Report")
     st.write(res.get('comparison_report', ''))
     
+    st.download_button(
+        "📥 Download PDF Report",
+        data=create_pdf("comparison", res),
+        file_name="competitor_report.pdf",
+        mime="application/pdf"
+    )
+
     st.divider()
     st.subheader("Detailed Site Analysis")
     
@@ -323,7 +395,7 @@ else:
                         browser.close()
 
                     client = Groq(api_key=groq_key)
-                    msgs = [{"type": "text", "text": f"Compare these websites based on: {selected_sets}. Return JSON: {{ 'winner': 'URL', 'comparison_report': 'Detailed text comparing the sites...', 'sites': [ {{ 'url': '...', 'score': 0-100, 'summary': '...', 'issues': [ {{ 'title': '...', 'severity': 'Critical|High|Medium|Low', 'description': '...' }} ] }} ] }}."}]
+                    msgs = [{"type": "text", "text": f"Compare these websites based on: {selected_sets}. Return JSON: {{ 'winner': 'URL', 'comparison_report': 'Extensive, professional comparison report (min 1500 words) covering all UX aspects in detail.', 'sites': [ {{ 'url': '...', 'score': 0-100, 'summary': 'Detailed site summary...', 'issues': [ {{ 'title': '...', 'severity': 'Critical|High|Medium|Low', 'description': '...' }} ] }} ] }}."}]
                     for p_data in payloads:
                         msgs.append({"type": "text", "text": f"URL: {p_data['url']}\n{p_data['txt']}"})
                         msgs.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{p_data['img']}"}})
@@ -400,7 +472,7 @@ Return exactly this JSON:
     "Motor Impairment": [{{"time": int (seconds), "frustration": int (0-100)}}],
     "Non-native Speaker": [{{"time": int (seconds), "frustration": int (0-100)}}]
   }},
-  "summary": "2-3 paragraph summary",
+  "summary": "Detailed, comprehensive professional audit report (minimum 1000 words) covering navigation, visual hierarchy, content, and interaction flow.",
   "persona_summaries": {{ "Standard": "...", "Color Blind": "...", "Elderly": "...", "Motor Impairment": "...", "Non-native Speaker": "..." }},
   "issues": [{{ "title": "...", "description": "...", "severity": "Critical|High|Medium|Low", "affected_persona": "Standard|Color Blind|Elderly|Motor Impairment|Non-native Speaker", "category": "Usability|Accessibility", "recommendation": "..." }}]
 }}"""
