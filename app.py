@@ -8,6 +8,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 import uuid
+import pandas as pd
 
 # ====================== CONFIG ======================
 st.set_page_config(
@@ -147,15 +148,18 @@ if "current_audit" in st.session_state and st.session_state.current_audit:
         st.metric("Accessibility", f"{audit.get('accessibility_score', 0):.0f}%")
 
     # Persona Scores (New Feature)
-    if "persona_scores" in audit:
+    if "persona_frustration_over_time" in audit:
         st.divider()
-        st.subheader("Personas")
-        p_scores = audit["persona_scores"]
-        p_cols = st.columns(len(p_scores))
-        for idx, (persona, score) in enumerate(p_scores.items()):
-            with p_cols[idx]:
-                st.metric(persona, f"{score:.0f}%")
+        st.subheader("Persona Frustration Levels Over Time")
+        frustration_data = audit["persona_frustration_over_time"]
         
+        for persona, data_points in frustration_data.items():
+            if data_points:
+                st.markdown(f"#### {persona}")
+                df = pd.DataFrame(data_points).set_index('time')
+                df.rename(columns={'frustration': 'Frustration (0-100)'}, inplace=True)
+                st.line_chart(df)
+
         # Persona Walkthrough Summaries
         if "persona_summaries" in audit:
             with st.expander("Walkthroughs"):
@@ -373,17 +377,19 @@ Perform a simulation of 5 specific user personas walking through this page:
 2. Color Blind User (assess color contrast, reliance on color)
 3. Elderly User (small text, complex navigation, confusing flows)
 4. Motor Impairment (small click targets, keyboard navigation needs)
-5. Non-native Speaker (idioms, complex language, unclear icons)
+5. Non-native Speaker (idioms, complex language, unclear icons).
+
+For each persona, simulate a 60-second journey. Estimate their frustration level (0=calm, 100=quits) over time. Record data points at key moments of interaction or confusion.
 
 Return exactly this JSON:
 {{
   "overall_score": float (0-100),
-  "persona_scores": {{
-    "Standard": float (0-100),
-    "Color Blind": float (0-100),
-    "Elderly": float (0-100),
-    "Motor Impairment": float (0-100),
-    "Non-native Speaker": float (0-100)
+  "persona_frustration_over_time": {{
+    "Standard": [{{"time": int (seconds), "frustration": int (0-100)}}],
+    "Color Blind": [{{"time": int (seconds), "frustration": int (0-100)}}],
+    "Elderly": [{{"time": int (seconds), "frustration": int (0-100)}}],
+    "Motor Impairment": [{{"time": int (seconds), "frustration": int (0-100)}}],
+    "Non-native Speaker": [{{"time": int (seconds), "frustration": int (0-100)}}]
   }},
   "summary": "2-3 paragraph summary",
   "persona_summaries": {{ "Standard": "...", "Color Blind": "...", "Elderly": "...", "Motor Impairment": "...", "Non-native Speaker": "..." }},
@@ -412,15 +418,26 @@ Return exactly this JSON:
                         with open(screenshot_path, "wb") as f:
                             f.write(screenshot_bytes)
 
+                        # Calculate usability/accessibility scores from final frustration
+                        frustration_data = analysis.get("persona_frustration_over_time", {})
+                        std_frustration = frustration_data.get("Standard", [])
+                        motor_frustration = frustration_data.get("Motor Impairment", [])
+                        
+                        final_std_frustration = std_frustration[-1]['frustration'] if std_frustration else 50
+                        final_motor_frustration = motor_frustration[-1]['frustration'] if motor_frustration else 50
+
+                        usability_score = 100 - final_std_frustration
+                        accessibility_score = 100 - final_motor_frustration
+
                         # Build audit record
                         audit_data = {
                             "id": str(uuid.uuid4()),
                             "url": url,
                             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                             "overall_score": round(analysis.get("overall_score", 50), 1),
-                            "usability_score": round(analysis.get("persona_scores", {}).get("Standard", 50), 1),
-                            "accessibility_score": round(analysis.get("persona_scores", {}).get("Motor Impairment", 50), 1),
-                            "persona_scores": analysis.get("persona_scores", {}),
+                            "usability_score": usability_score,
+                            "accessibility_score": accessibility_score,
+                            "persona_frustration_over_time": frustration_data,
                             "persona_summaries": analysis.get("persona_summaries", {}),
                             "summary": analysis.get("summary", ""),
                             "issues": analysis.get("issues", []),
