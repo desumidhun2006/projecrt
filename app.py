@@ -112,7 +112,7 @@ with st.sidebar:
     
     if history:
         for audit in reversed(history[-10:]):
-            label = f"{audit['url'][:30]}... ({audit.get('overall_score', 0):.1f})"
+            label = f"{audit['url'][:30]}... ({audit.get('overall_score', 0):.0f}%)"
             if st.button(label, key=f"load_{audit['id']}"):
                 st.session_state.current_audit = audit
                 st.rerun()
@@ -136,11 +136,11 @@ if "current_audit" in st.session_state and st.session_state.current_audit:
     # Scores at top
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.metric("Overall", f"{audit.get('overall_score', 0):.1f}")
+        st.metric("Overall", f"{audit.get('overall_score', 0):.0f}%")
     with col2:
-        st.metric("Usability", f"{audit.get('usability_score', 0):.1f}")
+        st.metric("Usability", f"{audit.get('usability_score', 0):.0f}%")
     with col3:
-        st.metric("Accessibility", f"{audit.get('accessibility_score', 0):.1f}")
+        st.metric("Accessibility", f"{audit.get('accessibility_score', 0):.0f}%")
 
     # Persona Scores (New Feature)
     if "persona_scores" in audit:
@@ -150,7 +150,7 @@ if "current_audit" in st.session_state and st.session_state.current_audit:
         p_cols = st.columns(len(p_scores))
         for idx, (persona, score) in enumerate(p_scores.items()):
             with p_cols[idx]:
-                st.metric(persona, f"{score:.1f}")
+                st.metric(persona, f"{score:.0f}%")
         
         # Persona Walkthrough Summaries
         if "persona_summaries" in audit:
@@ -220,7 +220,7 @@ if "current_audit" in st.session_state and st.session_state.current_audit:
                     p_context = json.dumps(audit.get('persona_scores', {}), indent=2)
                     context = f"""Website: {audit['url']}
 Timestamp: {audit['timestamp']}
-Scores: Overall {audit.get('overall_score'):.1f}/10
+Scores: Overall {audit.get('overall_score'):.0f}%
 Persona Scores: {p_context}
 Summary: {audit.get('summary', '')[:1200]}
 Issues: {json.dumps(audit.get('issues', []), indent=2)[:1800]}"""
@@ -295,13 +295,13 @@ Perform a simulation of 5 specific user personas walking through this page:
 
 Return exactly this JSON:
 {{
-  "overall_score": float,
+  "overall_score": float (0-100),
   "persona_scores": {{
-    "Standard": float,
-    "Color Blind": float,
-    "Elderly": float,
-    "Motor Impairment": float,
-    "Non-native Speaker": float
+    "Standard": float (0-100),
+    "Color Blind": float (0-100),
+    "Elderly": float (0-100),
+    "Motor Impairment": float (0-100),
+    "Non-native Speaker": float (0-100)
   }},
   "summary": "2-3 paragraph summary",
   "persona_summaries": {{ "Standard": "...", "Color Blind": "...", "Elderly": "...", "Motor Impairment": "...", "Non-native Speaker": "..." }},
@@ -335,9 +335,9 @@ Return exactly this JSON:
                         "id": str(uuid.uuid4()),
                         "url": url,
                         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "overall_score": round(analysis.get("overall_score", 5.0), 1),
-                        "usability_score": round(analysis.get("persona_scores", {}).get("Standard", 5.0), 1),
-                        "accessibility_score": round(analysis.get("persona_scores", {}).get("Motor Impairment", 5.0), 1),
+                        "overall_score": round(analysis.get("overall_score", 50), 1),
+                        "usability_score": round(analysis.get("persona_scores", {}).get("Standard", 50), 1),
+                        "accessibility_score": round(analysis.get("persona_scores", {}).get("Motor Impairment", 50), 1),
                         "persona_scores": analysis.get("persona_scores", {}),
                         "persona_summaries": analysis.get("persona_summaries", {}),
                         "summary": analysis.get("summary", ""),
