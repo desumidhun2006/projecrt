@@ -1,0 +1,7 @@
+streamlit
+groq
+playwright
+beautifulsoup4
+pandas
+sqlalchemy
+openpyxl
