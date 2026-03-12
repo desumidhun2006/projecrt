@@ -395,7 +395,7 @@ else:
                         browser.close()
 
                     client = Groq(api_key=groq_key)
-                    msgs = [{"type": "text", "text": f"Compare these websites based on: {selected_sets}. Return JSON: {{ 'winner': 'URL', 'comparison_report': 'Extensive, professional comparison report (min 1500 words) covering all UX aspects in detail.', 'sites': [ {{ 'url': '...', 'score': 0-100, 'summary': 'Detailed site summary...', 'issues': [ {{ 'title': '...', 'severity': 'Critical|High|Medium|Low', 'description': '...' }} ] }} ] }}."}]
+                    msgs = [{"type": "text", "text": f"Compare these websites based on: {selected_sets}. Return JSON: {{ 'winner': 'URL', 'comparison_report': 'Extremely detailed, extensive professional comparison report (minimum 2000 words). Describe every element, micro-interaction, and design choice in depth. Ensure the content fills at least 3 pages.', 'sites': [ {{ 'url': '...', 'score': 0-100, 'summary': 'Detailed site summary...', 'issues': [ {{ 'title': '...', 'severity': 'Critical|High|Medium|Low', 'description': 'Very descriptive explanation of the issue...' }} ] }} ] }}."}]
                     for p_data in payloads:
                         msgs.append({"type": "text", "text": f"URL: {p_data['url']}\n{p_data['txt']}"})
                         msgs.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{p_data['img']}"}})
@@ -472,9 +472,9 @@ Return exactly this JSON:
     "Motor Impairment": [{{"time": int (seconds), "frustration": int (0-100)}}],
     "Non-native Speaker": [{{"time": int (seconds), "frustration": int (0-100)}}]
   }},
-  "summary": "Detailed, comprehensive professional audit report (minimum 1000 words) covering navigation, visual hierarchy, content, and interaction flow.",
+  "summary": "Extremely detailed, comprehensive professional audit report (minimum 2000 words). Describe the UI structure, color usage, navigation, and accessibility in exhaustive detail to ensure a 3-page PDF report. Even small details must be elaborated.",
   "persona_summaries": {{ "Standard": "...", "Color Blind": "...", "Elderly": "...", "Motor Impairment": "...", "Non-native Speaker": "..." }},
-  "issues": [{{ "title": "...", "description": "...", "severity": "Critical|High|Medium|Low", "affected_persona": "Standard|Color Blind|Elderly|Motor Impairment|Non-native Speaker", "category": "Usability|Accessibility", "recommendation": "..." }}]
+  "issues": [{{ "title": "...", "description": "Very descriptive explanation of the issue (min 50 words)...", "severity": "Critical|High|Medium|Low", "affected_persona": "Standard|Color Blind|Elderly|Motor Impairment|Non-native Speaker", "category": "Usability|Accessibility", "recommendation": "Detailed fix..." }}]
 }}"""
 
                         response = client.chat.completions.create(
