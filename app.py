@@ -285,10 +285,10 @@ else:
         def add_url_field():
             st.session_state.comp_urls.append("")
 
-        if len(st.session_state.comp_urls) < 10:
+        if len(st.session_state.comp_urls) < 3:
             st.button("Add another link", on_click=add_url_field)
         else:
-            st.caption("Maximum limit of 10 URLs reached")
+            st.caption("Maximum limit of 3 URLs reached")
 
         target_urls = [u for u in st.session_state.comp_urls if u.strip()]
 
