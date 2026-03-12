@@ -97,6 +97,8 @@ with st.sidebar:
         st.session_state.current_audit = None
         if "comparison_result" in st.session_state:
             del st.session_state.comparison_result
+        if "comp_urls" in st.session_state:
+            st.session_state.comp_urls = ["", ""]
         st.rerun()
 
     st.subheader("Rules")
@@ -249,14 +251,19 @@ elif "comparison_result" in st.session_state and st.session_state.comparison_res
     st.subheader("⚔️ Competitor Comparison")
     
     st.success(f"**Winner:** {res.get('winner', 'N/A')}")
-    st.info("\n".join([f"• {i}" for i in res.get('insights', [])]))
+    st.markdown("### Comparison Report")
+    st.write(res.get('comparison_report', ''))
     
-    rows = []
-    for item in res.get('comparison_table', []):
-        r = {"Criterion": item['criterion'], "Notes": item['notes']}
-        r.update(item.get('scores', {}))
-        rows.append(r)
-    st.dataframe(rows, use_container_width=True)
+    st.divider()
+    st.subheader("Detailed Site Analysis")
+    
+    for site in res.get('sites', []):
+        with st.expander(f"{site.get('url')} (Score: {site.get('score', 0):.0f}%)"):
+            st.write(site.get('summary', ''))
+            st.markdown("**Issues:**")
+            for issue in site.get('issues', []):
+                sev = issue.get('severity', 'Medium')
+                st.markdown(f"- **[{sev}] {issue.get('title')}**: {issue.get('description')}")
     
     if st.button("New Analysis", type="primary"):
         del st.session_state.comparison_result
@@ -265,11 +272,21 @@ elif "comparison_result" in st.session_state and st.session_state.comparison_res
 else:
     # ================== NEW ANALYSIS MODE ==================
     if analysis_mode == "Competitor Comparison":
-        c1, c2 = st.columns(2)
-        u1 = c1.text_input("URL 1", placeholder="https://airbnb.com")
-        u2 = c2.text_input("URL 2", placeholder="https://booking.com")
-        u3 = st.text_input("URL 3 (Optional)", placeholder="https://expedia.com")
-        target_urls = [u for u in [u1, u2, u3] if u.strip()]
+        if "comp_urls" not in st.session_state:
+            st.session_state.comp_urls = ["", ""]
+
+        for i in range(len(st.session_state.comp_urls)):
+            st.session_state.comp_urls[i] = st.text_input(f"URL {i+1}", value=st.session_state.comp_urls[i], placeholder="https://", key=f"comp_url_{i}")
+
+        def add_url_field():
+            st.session_state.comp_urls.append("")
+
+        if len(st.session_state.comp_urls) < 10:
+            st.button("Add another link", on_click=add_url_field)
+        else:
+            st.caption("Maximum limit of 10 URLs reached")
+
+        target_urls = [u for u in st.session_state.comp_urls if u.strip()]
 
         if st.button("Compare Sites", type="primary", disabled=len(target_urls) < 2 or not selected_sets or not groq_key):
             with st.spinner("Analyzing competitors..."):
@@ -293,7 +310,7 @@ else:
                         browser.close()
 
                     client = Groq(api_key=groq_key)
-                    msgs = [{"type": "text", "text": f"Compare these websites based on: {selected_sets}. Return JSON: {{ 'comparison_table': [{{ 'criterion': '...', 'scores': {{ '{target_urls[0]}': 85, ... }}, 'notes': '...' }}], 'winner': 'URL', 'insights': ['...'] }}."}]
+                    msgs = [{"type": "text", "text": f"Compare these websites based on: {selected_sets}. Return JSON: {{ 'winner': 'URL', 'comparison_report': 'Detailed text comparing the sites...', 'sites': [ {{ 'url': '...', 'score': 0-100, 'summary': '...', 'issues': [ {{ 'title': '...', 'severity': 'Critical|High|Medium|Low', 'description': '...' }} ] }} ] }}."}]
                     for p_data in payloads:
                         msgs.append({"type": "text", "text": f"URL: {p_data['url']}\n{p_data['txt']}"})
                         msgs.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{p_data['img']}"}})
